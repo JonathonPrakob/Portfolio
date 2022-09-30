@@ -1,0 +1,556 @@
+Parameters:
+    #create AZ1 and 2 parameter so that the user can specify which availability zones they want their VPC to operate in
+    AZ1Parameter:
+        Type: String
+        Description: the first AZ
+        AllowedValues: 
+            - us-east-1a
+            - us-east-1b
+            - us-east-1c
+            - us-east-1d
+            - us-east-1e
+            - us-east-1f
+    AZ2Parameter: 
+        Type: String
+        Description: the second AZ
+        AllowedValues:
+            - us-east-1a
+            - us-east-1b
+            - us-east-1c 
+            - us-east-1d
+            - us-east-1e
+            - us-east-1f
+    #create S3 bucket parameter so the user can specify their bucket name
+    BucketNameParameter:
+        Type: String
+        Description: Name of your s3 bucket
+        MinLength: 3
+        MaxLength: 63
+        ConstraintDescription: https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html
+Resources:
+    # create VPC where the application will run
+    VPC:
+        Type: 'AWS::EC2::VPC'
+        Properties:
+          CidrBlock: 10.0.0.0/16
+          EnableDnsSupport: 'true'
+          EnableDnsHostnames: 'true'
+          Tags:
+            - Key: Name
+              Value: Application VPC
+    #create private subnets
+    PrivateSubnetA:
+        Type: 'AWS::EC2::Subnet'
+        Properties:
+          CidrBlock: 10.0.1.0/24
+          VpcId: !Ref VPC
+          AvailabilityZone: !Ref AZ1Parameter
+          Tags:
+            - Key: Name
+              Value: Application Private Subnet A
+    PrivateSubnetB:
+        Type: 'AWS::EC2::Subnet'
+        Properties:
+          CidrBlock: 10.0.3.0/24
+          VpcId: !Ref VPC
+          AvailabilityZone: !Ref AZ2Parameter
+          Tags:
+            - Key: Name
+              Value: Application Private Subnet B
+    #create public subnets 
+    PublicSubnetA:
+        Type: 'AWS::EC2::Subnet'
+        DependsOn: AttachGateway
+        Properties:
+          CidrBlock: 10.0.2.0/24
+          VpcId: !Ref VPC
+          AvailabilityZone: !Ref AZ1Parameter
+          Tags:
+            - Key: Name
+              Value: Application Public Subnet A
+    PublicSubnetB: 
+        Type: 'AWS::EC2::Subnet'
+        DependsOn: AttachGateway
+        Properties:
+          CidrBlock: 10.0.4.0/24
+          VpcId: !Ref VPC
+          AvailabilityZone: !Ref AZ2Parameter
+          Tags:
+            - Key: Name
+              Value: Application Public Subnet B
+    #create internet gateway to route traffic to internet
+    InternetGateway:
+        Type: 'AWS::EC2::InternetGateway'
+        DependsOn: VPC
+        Properties:
+            Tags:
+                - Key: Name
+                  Value: Application Internet Gateway
+    #attach internet gateway to VPC
+    AttachGateway:
+        Type: 'AWS::EC2::VPCGatewayAttachment'
+        Properties:
+            VpcId: !Ref VPC
+            InternetGatewayId: !Ref InternetGateway
+    #create elastic IP which will be used for nat gateway
+    ElasticIPAddress:
+        Type: 'AWS::EC2::EIP'
+        Properties:
+          Domain: VPC
+          Tags:
+            - Key: Name
+              Value: Application NAT gateway EIP
+    #create NAT gateway to forward traffic from private subnet to public subnet
+    NATGateway:
+        Type: 'AWS::EC2::NatGateway'
+        Properties:
+          AllocationId: !GetAtt ElasticIPAddress.AllocationId
+          SubnetId: !Ref PublicSubnetA
+          Tags:
+            - Key: Name
+              Value: Application NAT gateway
+    #create private route table
+    PrivateRouteTable:
+        Type: 'AWS::EC2::RouteTable'
+        Properties:
+          VpcId: !Ref VPC
+          Tags:
+            - Key: Name
+              Value: Application Private Route Table
+    #add rule to private route table forwarding traffic to nat gateway
+    PrivateRoute:
+        Type: 'AWS::EC2::Route'
+        DependsOn: NATGateway
+        Properties:
+          RouteTableId: !Ref PrivateRouteTable
+          DestinationCidrBlock: 0.0.0.0/0
+          NatGatewayId: !Ref NATGateway
+    #create public route table
+    PublicRouteTable:
+        Type: 'AWS::EC2::RouteTable'
+        Properties:
+          VpcId: !Ref VPC
+          Tags:
+            - Key: Name
+              Value: Application Public Route Table
+    #add rule to public route table forwarding traffic to internet gateway
+    PublicRoute:
+        Type: 'AWS::EC2::Route'
+        DependsOn: AttachGateway
+        Properties:
+          RouteTableId: !Ref PublicRouteTable
+          DestinationCidrBlock: 0.0.0.0/0
+          GatewayId: !Ref InternetGateway
+    #associate public subnets with public route table
+    PublicSubnetARouteTableAssociation:
+        Type: 'AWS::EC2::SubnetRouteTableAssociation'
+        Properties:
+          SubnetId: !Ref PublicSubnetA
+          RouteTableId: !Ref PublicRouteTable
+    PublicSubnetBRouteTableAssociation:
+        Type: 'AWS::EC2::SubnetRouteTableAssociation'
+        Properties:
+          SubnetId: !Ref PublicSubnetB
+          RouteTableId: !Ref PublicRouteTable
+    #associate private subnets with private route table
+    PrivateSubnetARouteTableAssociation:
+        Type: 'AWS::EC2::SubnetRouteTableAssociation'
+        Properties:
+          SubnetId: !Ref PrivateSubnetA
+          RouteTableId: !Ref PrivateRouteTable
+    PrivateSubnetBRouteTableAssociation:
+        Type: 'AWS::EC2::SubnetRouteTableAssociation'
+        Properties:
+          SubnetId: !Ref PrivateSubnetB
+          RouteTableId: !Ref PrivateRouteTable
+    #create vpc flow logs
+    VPCFlowLogs:
+        Type: AWS::EC2::FlowLog
+        Properties: 
+          LogDestination: 
+            Fn::Join: 
+                - ""
+                - - !GetAtt "S3Bucket.Arn"
+                  - "/VPCFlowLogs/"
+          LogDestinationType: s3
+          ResourceId: !Ref VPC
+          ResourceType: VPC
+          Tags: 
+            - Key: Name
+              Value: Application VPCFlowLogs
+          TrafficType: ALL
+    #create private S3 bucket for logging with encryption and versioning enabled. Objects are transferred to a cheaper storage class after 30 days.
+    S3Bucket:
+        Type: AWS::S3::Bucket
+        Properties:
+            AccelerateConfiguration:
+                AccelerationStatus: Enabled
+            BucketEncryption:
+                ServerSideEncryptionConfiguration: 
+                    - BucketKeyEnabled: true
+                      ServerSideEncryptionByDefault: 
+                        SSEAlgorithm: AES256
+            BucketName: !Ref BucketNameParameter
+            LifecycleConfiguration:
+                Rules:
+                    - Status: Enabled
+                      Transitions: 
+                          - StorageClass: ONEZONE_IA
+                            TransitionInDays: 30
+            OwnershipControls:
+                Rules: 
+                    - ObjectOwnership: BucketOwnerPreferred
+            PublicAccessBlockConfiguration:
+                  RestrictPublicBuckets: True
+            VersioningConfiguration:
+                  Status: Enabled
+    #create Security Group to allow http traffic on port 80 into the applicaiton load balancer
+    IntoAlbSg:
+        Type: 'AWS::EC2::SecurityGroup'
+        Properties:
+          Tags:
+            - Key: Name
+              Value: Application IntoAlbSg
+          GroupDescription: Enable http access via port 80
+          VpcId: !Ref VPC 
+          SecurityGroupIngress:
+            - CidrIp: 0.0.0.0/0
+              FromPort: 80
+              IpProtocol: tcp
+              ToPort: 80
+    #create application load balancer to distribute traffic with logging enabled into the s3 bucket
+    ALB:
+        Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+        DependsOn: AttachGateway
+        DependsOn: AllowAlbVpc
+        Properties: 
+            IpAddressType: ipv4
+            Name: ALB
+            Scheme: internet-facing
+            SecurityGroups: 
+               - !GetAtt IntoAlbSg.GroupId
+            Type: application
+            Subnets: 
+                - !Ref PublicSubnetA
+                - !Ref PublicSubnetB
+            LoadBalancerAttributes:
+                - Key: access_logs.s3.enabled
+                  Value: true
+                - Key: access_logs.s3.bucket
+                  Value: !Ref S3Bucket
+                - Key: access_logs.s3.prefix
+                  Value: ALBLogs
+    #create a target group where traffic will be forwarded to
+    HTTPTargetGroup:
+        Type: AWS::ElasticLoadBalancingV2::TargetGroup
+        Properties:
+            HealthCheckEnabled: true
+            HealthCheckIntervalSeconds: 30
+            HealthCheckPath: /
+            HealthCheckPort: traffic-port
+            HealthCheckProtocol: HTTP
+            HealthCheckTimeoutSeconds: 5
+            HealthyThresholdCount: 3
+            IpAddressType: ipv4
+            Matcher: 
+                HttpCode: 200
+            Name: HTTPTargetGroup
+            Port: 80
+            Protocol: HTTP
+            UnhealthyThresholdCount: 2
+            VpcId: !Ref VPC
+            TargetType: instance
+            TargetGroupAttributes: 
+              - Key: stickiness.enabled
+                Value: true
+              - Key: deregistration_delay.timeout_seconds
+                Value: 300
+              - Key: stickiness.type
+                Value: lb_cookie
+              - Key: stickiness.lb_cookie.duration_seconds
+                Value: 86400
+              - Key: load_balancing.algorithm.type
+                Value: least_outstanding_requests
+    #create a listener with a default rule to deny requests from port 80
+    HTTPListener:
+        Type: AWS::ElasticLoadBalancingV2::Listener
+        Properties:
+            LoadBalancerArn: !Ref ALB
+            Protocol: HTTP
+            Port: 80
+            DefaultActions:
+            - Type: fixed-response
+              FixedResponseConfig:
+                  ContentType: text/plain
+                  MessageBody: "Wrong door"
+                  StatusCode: "403"
+    #create a listener rule to forward requests from port 80 to target group only if the http-header has the specified header passed from cloudfront. 
+    #This ensures that only traffic from cloudfront is passed into the load balancer, adding a layer of security
+    HTTPListenerRule:
+        Type: AWS::ElasticLoadBalancingV2::ListenerRule
+        Properties: 
+          Actions: 
+            - TargetGroupArn: !Ref HTTPTargetGroup
+              Type: forward
+          Conditions: 
+            - Field: http-header
+              HttpHeaderConfig: 
+                HttpHeaderName: X-Custom-Header
+                Values: 
+                    - OnlyFromCloudfront
+          ListenerArn: !Ref HTTPListener
+          Priority: 1
+    #bucket policy for vpc flow logs and alb
+    AllowAlbVpc:
+        Type: AWS::S3::BucketPolicy
+        Properties: 
+            Bucket: !Ref BucketNameParameter
+            PolicyDocument: {
+                "Statement": [
+                     {
+                                "Sid": "AWSLogDeliveryWrite",
+                                "Effect": "Allow",
+                                "Principal": {
+                                    "Service": "delivery.logs.amazonaws.com"
+                                },
+                                "Action": "s3:PutObject",
+                                "Resource": ["Fn::Join": ["", ["arn:aws:s3:::", {"Ref":"S3Bucket"}, "/VPCFlowLogs/*" ]]],
+                                "Condition": {
+                                    "StringEquals": {
+                                        "aws:SourceAccount": !Ref "AWS::AccountId",
+                                        "s3:x-amz-acl": "bucket-owner-full-control"
+                                    },
+                                    "ArnLike": {
+                                        "aws:SourceArn": ["Fn::Join": ["", ["arn:aws:logs:",{"Ref":"AWS::Region"}, ":", {"Ref":"AWS::AccountId"}, ":*"]]]
+                                         
+                                    }
+                                }
+                            },
+                            {
+                                "Sid": "AWSLogDeliveryAclCheck",
+                                "Effect": "Allow",
+                                "Principal": {
+                                    "Service": "delivery.logs.amazonaws.com"
+                                },
+                                "Action": "s3:GetBucketAcl",
+                                "Resource": ["Fn::Join": ["", ["arn:aws:s3:::", {"Ref": "S3Bucket"}]]],
+                                
+                                
+                                "Condition": {
+                                    "StringEquals": {
+                                        "aws:SourceAccount": !Ref "AWS::AccountId"
+                                    },
+                                    "ArnLike": {
+                                        "aws:SourceArn": ["Fn::Join": ["", ["arn:aws:logs:",{"Ref":"AWS::Region"},":", {"Ref":"AWS::AccountId"}, ":*"]]]
+                                    }
+                                }
+                            },
+                            {
+                      "Effect": "Allow",
+                      "Principal": {
+                        "AWS": "arn:aws:iam::127311923021:root"
+                      },
+                      "Action": "s3:PutObject",
+                      "Resource": ["Fn::Join": ["", ["arn:aws:s3:::", {"Ref":"S3Bucket"}, "/ALBLogs/*" ]]]
+                    }
+                        ]
+                    }
+    #create ssh key for access into ec2 instances
+    SSHkey:
+        Type: 'AWS::EC2::KeyPair'
+        Properties:
+            KeyName: application SSH key
+            KeyType: rsa
+    #create security group for the instances allowing ssh access
+    sshSG:
+        Type: 'AWS::EC2::SecurityGroup'
+        Properties:
+          GroupDescription: Enable http access via port 22
+          VpcId: !Ref VPC
+          SecurityGroupIngress:
+            - CidrIp: 0.0.0.0/0
+              FromPort: 22
+              IpProtocol: tcp
+              ToPort: 22
+          Tags:
+            - Key: Name
+              Value: Application sshSG
+    #create security group which allows traffic from the application load balancer only on port 80 into the instances
+    IntoAsgSG:
+        Type: 'AWS::EC2::SecurityGroup'
+        Properties:
+            GroupDescription: forward traffic from alb to asg
+            VpcId: !Ref VPC
+            SecurityGroupIngress:
+                - IpProtocol: tcp
+                  SourceSecurityGroupId: !GetAtt IntoAlbSg.GroupId
+                  FromPort: 80
+                  ToPort: 80
+            Tags:
+                - Key: Name
+                  Value: Application IntoAsgSG
+    #create policy allowing session manager to run on ec2 instances
+    SessionManagerPolicy:
+        Type: AWS::IAM::Policy
+        Properties: 
+          PolicyDocument: {
+            Statement: [
+            {
+            "Effect": "Allow",
+            "Action": [
+                "ssm:UpdateInstanceInformation",
+                "ssmmessages:CreateControlChannel",
+                "ssmmessages:CreateDataChannel",
+                "ssmmessages:OpenControlChannel",
+                "ssmmessages:OpenDataChannel"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Effect": "Allow",
+            "Action": [
+                "s3:GetEncryptionConfiguration"
+            ],
+            "Resource": "*"
+        }]}
+          PolicyName: ApplicationSessionManagerPolicy
+          Roles: 
+            - !Ref SessionManagerRole
+    #assign the policy to a role so that it can be assumed by the instance
+    SessionManagerRole:
+        Type: AWS::IAM::Role
+        Properties: 
+            RoleName: ApplicationSessionManagerRole
+            AssumeRolePolicyDocument:
+                Statement:
+                  - Effect: Allow
+                    Principal:
+                      Service:
+                        - ec2.amazonaws.com
+                    Action:
+                      - 'sts:AssumeRole'
+    #assign the role to an instance profile to be used by the launch template
+    InstanceProfile:
+        Type: AWS::IAM::InstanceProfile
+        Properties:
+            InstanceProfileName: ApplicationInstanceProfile
+            Roles: 
+                - !Ref SessionManagerRole
+    #create launch template for ASG using an AMI with session manager preinstalled. The created security groups and instance profiles are assigned
+    #ec2 user data is used to display a "hello world" message
+    LaunchTemplate:
+        Type: AWS::EC2::LaunchTemplate
+        Properties:
+            LaunchTemplateName: ApplicationLaunchTemplate
+            LaunchTemplateData:
+                ImageId: ami-026b57f3c383c2eec
+                InstanceType: t2.micro
+                KeyName: !Ref SSHkey
+                UserData:
+                    'Fn::Base64': |
+                        #!/bin/bash -xe
+                        yum update -y
+                        yum install -y httpd
+                        systemctl start httpd
+                        systemctl enable httpd
+                        echo "Hello World from user data" > /var/www/html/index.html
+                SecurityGroupIds: 
+                - !GetAtt sshSG.GroupId
+                - !GetAtt IntoAsgSG.GroupId
+                IamInstanceProfile: 
+                    Arn: !GetAtt InstanceProfile.Arn
+    #create scaling policy for auto-scaling group based on cpu utilization
+    ScalingPolicy:
+        DependsOn: ASG
+        Type: AWS::AutoScaling::ScalingPolicy
+        Properties:
+            AutoScalingGroupName: !Ref ASG
+            Cooldown: 180
+            PolicyType: TargetTrackingScaling
+            TargetTrackingConfiguration: 
+                PredefinedMetricSpecification:
+                    PredefinedMetricType: ASGAverageCPUUtilization
+                TargetValue: 80
+    #create autoscaling group using spot instances, launch template, and scaling policy. This ASG is assigned to the ALB
+    ASG:
+        Type: AWS::AutoScaling::AutoScalingGroup
+        DependsOn: PrivateSubnetA
+        DependsOn: PrivateSubnetB
+        DependsOn: LaunchTemplate
+        Properties: 
+            AutoScalingGroupName: ApplicationASG
+            DesiredCapacity: 1
+            DesiredCapacityType: units
+            HealthCheckGracePeriod: 30
+            HealthCheckType: ELB
+            MaxSize: 2
+            MetricsCollection: 
+                - Granularity: 1Minute
+            MinSize: 1
+            NewInstancesProtectedFromScaleIn: true
+            MixedInstancesPolicy:
+                LaunchTemplate: 
+                    LaunchTemplateSpecification: 
+                        LaunchTemplateName: ApplicationLaunchTemplate
+                        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+                InstancesDistribution:
+                    SpotAllocationStrategy: lowest-price
+            TerminationPolicies: 
+                - OldestInstance
+            VPCZoneIdentifier:
+                - !Ref PrivateSubnetA
+                - !Ref PrivateSubnetB
+            TargetGroupARNs:
+                - !Ref HTTPTargetGroup
+    #create cache policy to attach to the default cache behavior for cloudfront
+    CachePolicy:
+        Type: AWS::CloudFront::CachePolicy
+        Properties: 
+            CachePolicyConfig: 
+                DefaultTTL: 86400
+                MaxTTL: 31536000
+                MinTTL: 86400
+                Name: applicationCachePolicy
+                ParametersInCacheKeyAndForwardedToOrigin:
+                      CookiesConfig: 
+                          CookieBehavior: none
+                      EnableAcceptEncodingBrotli: false
+                      EnableAcceptEncodingGzip: false
+                      HeadersConfig: 
+                          HeaderBehavior: none
+                      QueryStringsConfig: 
+                          QueryStringBehavior: none
+    #create cloudfront distribution so that all traffic to the application originates from here. a custom header is passed to ensure the 
+    #alb only forwards traffic to targets when the custom header is present. Logging is also enabled into the s3 bucket
+    Cloudfront:
+        Type: AWS::CloudFront::Distribution
+        Properties: 
+            Tags:
+                - Key: Name
+                  Value: Application Cloudfront
+            DistributionConfig:
+                Origins:
+                    - ConnectionAttempts: 3
+                      ConnectionTimeout: 10
+                      CustomOriginConfig: 
+                          HTTPPort: 80
+                          OriginKeepaliveTimeout: 5
+                          OriginProtocolPolicy: http-only
+                          OriginReadTimeout: 30
+                      DomainName: !GetAtt ALB.DNSName
+                      Id: ApplicationOrigin
+                      OriginCustomHeaders:
+                        - HeaderName: X-Custom-Header
+                          HeaderValue: OnlyFromCloudfront
+                PriceClass: PriceClass_100
+                Logging:
+                    Bucket: !GetAtt S3Bucket.DomainName
+                    IncludeCookies: true
+                    Prefix: CloudfrontAccessLogs
+                Enabled: true
+                IPV6Enabled: false
+                DefaultCacheBehavior:
+                    TargetOriginId: ApplicationOrigin
+                    ViewerProtocolPolicy: allow-all
+                    CachePolicyId: !Ref CachePolicy
+    
