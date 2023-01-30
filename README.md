@@ -1,1 +1,0 @@
-# This is a simple hello world application built on cloudformation. However, there are many moving parts and intracacies. Parts include: application load balancer, S3 bucket, cloudfront distribution, autoscaling group, launch template, VPC, subnet, routing table, nat gateway, internet gateway, security groups, IAM policies/roles/profiles, 
